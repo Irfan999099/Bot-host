@@ -7,6 +7,7 @@ import aiohttp
 from aiohttp import web
 import hmac
 import hashlib
+import uuid
 import json
 import os
 import html
