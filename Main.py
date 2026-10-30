@@ -44,32 +44,25 @@ ADMIN_CONTACT = "@TGxUnknown999"
 # --- FAMGATEWAY (famgateway.in) AUTO PAYMENT ---
 # Get your key (sk_live_...) from https://famgateway.in/dashboard.php
 # You can also set/change it from the bot: Admin Panel -> FamPay Setup
-FAMGATEWAY_API_KEY = os.getenv("FAMGATEWAY_API_KEY", "").strip()
+FAMGATEWAY_API_KEY = "fam_0397378f37fb5e92fe4dbc43a0e59afc92a688ba"
 FAMGATEWAY_BASE = "https://famgateway.in"
 MIN_DEPOSIT = 30.0
 MAX_DEPOSIT = 50000.0
 
 # --- DRIP CLIENT OFFICIAL API (automatic key supplier) ---
 DRIP_API_BASE = "https://dripclientofficial.dev"
-DRIP_API_KEY = os.getenv("DRIP_API_KEY", "").strip()
+DRIP_API_KEY = "drip_sk_live_57377fa2dcec9ba6cca44ff2ec3f9bd5f7df0d5bc48ab5a8c591eed97ffdf4bc"  # Example key  # Better: admin can override via settings key 'aryan_api_key'
 
 USDT_TO_INR = 90.0
-DRIP_USD_TO_INR = 100.0
-DRIP_SELL_MULTIPLIER = 1.5
 VIP_DISCOUNT_PERCENTAGE = 10.0
 VIP_PRICE_INR = 1000.0
 
 WELCOME_STICKER_ID = "CAACAgIAAxkBAAEU-WZmH_..."  # Replace with your sticker ID
 
 FIXED_CATEGORIES = [
-    "FF PROXY",
-    "NON-ROOT",
-    "ROOT PANEL",
-    "iOS PANEL",
-    "PC PANEL",
-    # Keep products already present in the bot's original local catalogue visible.
     "ANDROID NON ROOT PANEL",
     "ANDROID ROOT PANEL",
+    "PC PANEL"
 ]
 
 # ==============================================================================
@@ -540,9 +533,11 @@ def migrate_categories() -> None:
         "android root panel": "ANDROID ROOT PANEL",
         "pc panel": "PC PANEL",
     }
-    for old_category, new_category in mapping.items():
-        db_query("UPDATE products SET category = ? WHERE LOWER(TRIM(category)) = ?", (new_category, old_category))
-    # Do not collapse unknown/supplier categories into NON-ROOT; keep their original grouping.
+    for old, new in mapping.items():
+        db_query("UPDATE products SET category = ? WHERE LOWER(category) = ?", (new, old))
+    
+    db_query("UPDATE products SET category = 'ANDROID NON ROOT PANEL' WHERE LOWER(category) NOT IN (?, ?, ?)",
+             ("android non root panel", "android root panel", "pc panel"))
     
     set_setting("migration_done", "1")
     logger.info("Category migration complete.")
@@ -1439,87 +1434,6 @@ async def process_crypto_txid(m: Message, state: FSMContext):
         except Exception as e: await m.answer(f"⚠️ <b>Connection Error:</b> {str(e)}", reply_markup=back_kb("menu_add_balance"), parse_mode='HTML')
 
 # ==============================================================================
-# DRIP PRODUCT CATALOG IMPORT
-# ==============================================================================
-def sync_drip_products() -> int:
-    """Import/update supplier products from drip_products.json without duplicating rows."""
-    catalog_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "drip_products.json")
-    if not os.path.isfile(catalog_path):
-        logger.warning("drip_products.json not found; keeping the existing local product catalogue.")
-        return 0
-
-    try:
-        with open(catalog_path, "r", encoding="utf-8") as file:
-            payload = json.load(file)
-        items = payload.get("data", {}).get("items", [])
-        if not isinstance(items, list):
-            raise ValueError("Expected data.items to be a list")
-    except Exception as exc:
-        logger.exception("Could not read Drip product catalogue: %s", exc)
-        return 0
-
-    conn = sqlite3.connect("aryan.db")
-    cur = conn.cursor()
-    synced = 0
-    try:
-        for item in items:
-            api_code = str(item.get("apiCode") or "").strip()
-            if not api_code:
-                continue
-
-            cost_usd = safe_float(item.get("priceUsd"))
-            if cost_usd <= 0:
-                # price is expressed in USD microcents; this is a fallback for missing priceUsd.
-                raw_price = safe_float(item.get("price"))
-                cost_usd = raw_price / 100_000_000 if raw_price else 0.0
-            if cost_usd <= 0:
-                logger.warning("Skipping supplier item with invalid price: %s", api_code)
-                continue
-
-            selling_price_inr = round(cost_usd * DRIP_USD_TO_INR * DRIP_SELL_MULTIPLIER, 2)
-            category = str(item.get("category") or "NON-ROOT").strip()
-            panel_name = str(item.get("product") or item.get("productApiCode") or category).strip()
-            package_name = str(item.get("label") or item.get("name") or api_code).strip()
-            validity = package_name
-            device_limit = "Android ID Required" if item.get("requires_android_id") else "N/A"
-            supplier_stock = max(0, int(item.get("stock") or 0))
-            if item.get("is_maintenance") or not item.get("inStock", supplier_stock > 0):
-                supplier_stock = 0
-
-            existing = cur.execute(
-                "SELECT id FROM products WHERE api_product_id=? ORDER BY id LIMIT 1", (api_code,)
-            ).fetchone()
-            values = (category, panel_name, package_name, selling_price_inr,
-                      selling_price_inr, supplier_stock, "", validity, device_limit,
-                      package_name, api_code)
-            if existing:
-                cur.execute(
-                    "UPDATE products SET category=?, panel_name=?, name=?, price_inr=?, reseller_price=?, "
-                    "stock=?, apk_link=?, validity=?, device_limit=?, api_duration=?, is_active=1 "
-                    "WHERE id=?",
-                    values[:-1] + (existing[0],)
-                )
-            else:
-                cur.execute(
-                    "INSERT INTO products (category, panel_name, name, price_inr, reseller_price, stock, "
-                    "apk_link, validity, device_limit, api_duration, api_product_id, is_active) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
-                    values
-                )
-            synced += 1
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        logger.exception("Drip product catalogue sync failed")
-        raise
-    finally:
-        conn.close()
-
-    logger.info("Drip catalogue sync complete: %s products imported/updated.", synced)
-    return synced
-
-
-# ==============================================================================
 # 14. SHOP – with uppercase categories and new point_down emoji
 # ==============================================================================
 @dp.callback_query(F.data == "menu_shop")
@@ -1681,8 +1595,6 @@ async def _process_buy(call: CallbackQuery):
     user = db_query("SELECT balance, is_reseller, total_saved, is_vip FROM users WHERE user_id=?", (call.from_user.id,), fetchone=True)
     if not prod:
         return await call.answer("❌ Critical Error: Item not found in DB!", show_alert=True)
-    if int(prod[2] or 0) <= 0:
-        return await call.answer("❌ This product is currently out of stock or under maintenance.", show_alert=True)
     
     normal_price = safe_float(prod[1])
     reseller_price = safe_float(prod[7])
@@ -1722,8 +1634,6 @@ async def _process_buy(call: CallbackQuery):
                     pass
             return await call.message.answer(user_msg, parse_mode='HTML')
         api_delivered = result
-        # Reserve one unit locally after the supplier confirms successful delivery.
-        db_query("UPDATE products SET stock=CASE WHEN stock>0 THEN stock-1 ELSE 0 END WHERE id=?", (prod_id,))
 
     # Deduct balance
     db_query(
@@ -3122,7 +3032,78 @@ async def main() -> None:
     init_db()
     logger.info("Initializing DB structure...")
     migrate_categories()
-    sync_drip_products()
+    rebuild_auto_emoji()
+    bot.session.middleware(PremiumEmojiMiddleware())
+    logger.info(f"Global premium emoji engine active ({len(AUTO_EMOJI_MAP)} emojis).")
+
+    # Render Web Services must listen on the assigned PORT.
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Health server listening on 0.0.0.0:{port}")
+
+    asyncio.create_task(auto_verify_task())
+    logger.info("FamPay Auto-Verifier Daemon Running in Background.")
+    logger.info("🚀 CORE SYSTEM IS FULLY OPERATIONAL...")
+    try:
+        await dp.start_polling(bot)
+    except Exception as err:
+        logger.exception(f"Critical System Failure in Polling: {err}")
+        raise
+    finally:
+        await runner.cleanup()
+        await bot.session.close()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("System shutting down gracefully. Goodbye.")
+
+@dp.message(Command("setemoji"))
+async def cmd_setemoji(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    parts = (m.text or "").split()
+    if len(parts) != 3 or not parts[2].isdigit():
+        return await m.answer("Usage: <code>/setemoji ✅ 5368324170671202286</code>", parse_mode='HTML')
+    custom = load_custom_auto_emoji()
+    custom[_norm_emoji(parts[1])] = parts[2]
+    save_auto_emoji_map(custom)
+    await m.answer(f"✅ {parts[1]} will now show as premium emoji <code>{parts[2]}</code> everywhere.", parse_mode='HTML')
+
+@dp.message(Command("delemoji"))
+async def cmd_delemoji(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    parts = (m.text or "").split()
+    if len(parts) != 2:
+        return await m.answer("Usage: <code>/delemoji ✅</code>", parse_mode='HTML')
+    custom = load_custom_auto_emoji()
+    custom.pop(_norm_emoji(parts[1]), None)
+    save_auto_emoji_map(custom)
+    await m.answer("✅ Removed.")
+
+@dp.message(Command("listemoji"))
+async def cmd_listemoji(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    lines = [f"{k} → <code>{v}</code>" for k, v in AUTO_EMOJI_MAP.items()]
+    await m.answer("🎨 <b>Auto premium emojis (%d)</b>\n%s" % (len(lines), "\n".join(lines) if lines else "none"), parse_mode='HTML')
+
+# ==============================================================================
+# 25. BOOTSTRAPPING & MAIN
+# ==============================================================================
+async def health_check(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "service": "telegram-bot"})
+
+
+async def main() -> None:
+    init_db()
+    logger.info("Initializing DB structure...")
+    migrate_categories()
     rebuild_auto_emoji()
     bot.session.middleware(PremiumEmojiMiddleware())
     logger.info(f"Global premium emoji engine active ({len(AUTO_EMOJI_MAP)} emojis).")
