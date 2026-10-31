@@ -216,7 +216,7 @@ START_MENU_EMOJIS = {
 
 UI_TEXTS = {
     "start_menu": (
-        "<blockquote>{e_cart} <b>— DEMO MODZ STORE —</b> {e_cart}</blockquote>"
+        "<blockquote>{e_cart} <b>— ELITE MODZ STORE —</b> {e_cart}</blockquote>"
         "{e_crown} Welcome, <b>{first_name}</b>!\n\n"
         "<blockquote>"
         "{e_game} Premium Game Keys\n"
