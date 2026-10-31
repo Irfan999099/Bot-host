@@ -1547,40 +1547,54 @@ async def drip_request(method: str, endpoint: str, json_data: dict = None) -> Tu
         return False, f"Connection error: {e}"
 
 async def drip_buy(api_code: str, quantity: int = 1) -> Tuple[bool, str]:
-    """Buy key using apiCode. Returns (True, key) or (False, error_message)"""
+    """Buy key using sku (apiCode). Returns (True, key) or (False, error_message)"""
+    import uuid
+
     payload = {
-        "items": [
-            {
-                "apiCode": str(api_code).strip(),
-                "quantity": int(quantity)
-            }
-        ]
+        "sku": str(api_code).strip(),
+        "quantity": int(quantity)
     }
-    ok, data = await drip_request("POST", "/api/v1/orders", payload)
-    if not ok:
-        return False, str(data)
+
+    api_key = get_drip_api_key()
+    url = f"{DRIP_API_BASE}/api/v1/orders"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Idempotency-Key": str(uuid.uuid4())
+    }
 
     try:
-        if isinstance(data, dict):
-            if "data" in data:
-                d = data["data"]
-                if "keys" in d and d["keys"]:
-                    return True, str(d["keys"][0])
-                if "items" in d and d["items"]:
-                    item = d["items"][0]
-                    if "keys" in item and item["keys"]:
-                        return True, str(item["keys"][0])
-                    if "key" in item:
-                        return True, str(item["key"])
-            if "keys" in data and data["keys"]:
-                return True, str(data["keys"][0])
-            if "key" in data:
-                return True, str(data["key"])
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=payload) as r:
+                text = await r.text()
+                try:
+                    data = json.loads(text)
+                except ValueError:
+                    return False, f"Invalid JSON (HTTP {r.status}): {text[:200]}"
+
+                if r.status >= 400:
+                    err = data.get("error", {}) if isinstance(data, dict) else {}
+                    msg = err.get("message") or str(data)
+                    return False, str(msg)
+
+                # Extract key from response
+                if isinstance(data, dict) and "data" in data:
+                    d = data["data"]
+                    if "keys" in d and d["keys"]:
+                        return True, str(d["keys"][0])
+                    if "items" in d and d["items"] and "key" in d["items"][0]:
+                        return True, str(d["items"][0]["key"])
+
+                return False, f"Order success but key not found: {json.dumps(data)[:300]}"
+
+    except asyncio.TimeoutError:
+        return False, "TIMEOUT"
     except Exception as e:
-        logger.error(f"drip_buy parse error: {e} | data={data}")
-
-    return False, f"Order success but key not found in response: {json.dumps(data)[:350]}"
-
+        return False, f"Connection error: {e}"
+        
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_buy(call: CallbackQuery):
     """Wrapper: one purchase at a time per user (stops double-click double-buy)."""
